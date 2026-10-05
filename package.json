@@ -1,0 +1,25 @@
+{
+  "name": "amigos-outreach",
+  "version": "1.0.0",
+  "description": "Cold email campaign planner and sender for Amigos Recruiting",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/server.js",
+    "test": "node --disable-warning=ExperimentalWarning --test 'test/*.test.js'",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "csv-parse": "^7.0.3",
+    "express": "^5.2.1",
+    "imapflow": "^2.2.5",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.15",
+    "zod": "^4.6.5"
+  }
+}
