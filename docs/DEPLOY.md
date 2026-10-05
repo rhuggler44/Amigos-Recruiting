@@ -71,6 +71,10 @@ sudo systemctl restart amigos-outreach
 | Update to the latest version | `sudo bash /opt/amigos-outreach/deploy/update.sh` |
 | Backups | Daily at 3:15 AM into `/var/lib/amigos-outreach/backups` (14 kept). Copy them off the server now and then. |
 
+If the server already runs **Traefik in Docker** (common on Hostinger VPS templates), the installer says so.
+Finish with `sudo bash deploy/traefik.sh your.domain`. That runs the app as a container that Traefik routes
+the domain to, with HTTPS, and keeps the same settings, data and backups.
+
 If the server runs **cPanel/WHM or Plesk**, the installer still installs and runs the app, but leaves the web server alone.
 Panels overwrite manual configs. Either add a reverse proxy for the subdomain to `http://127.0.0.1:3100`
 in the panel (Plesk: *Apache & nginx Settings → Additional nginx directives*), or use option C.

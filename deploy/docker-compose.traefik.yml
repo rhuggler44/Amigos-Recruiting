@@ -1,0 +1,22 @@
+# Runs Amigos Outreach as a container behind an existing Traefik (Docker provider, "websecure" entrypoint,
+# "letsencrypt" resolver). Started by deploy/traefik.sh, which fills in the variables.
+services:
+  app:
+    build: ..
+    image: amigos-outreach:latest
+    restart: unless-stopped
+    user: "${AMIGOS_UID}:${AMIGOS_GID}"
+    env_file: ../.env
+    environment:
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DATA_DIR: /data
+    volumes:
+      - /var/lib/amigos-outreach:/data
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: amigos-outreach_default
+      traefik.http.routers.amigos-outreach.rule: Host(`${DOMAIN}`)
+      traefik.http.routers.amigos-outreach.entrypoints: websecure
+      traefik.http.routers.amigos-outreach.tls.certresolver: letsencrypt
+      traefik.http.services.amigos-outreach.loadbalancer.server.port: "3000"

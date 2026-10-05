@@ -221,7 +221,11 @@ elif systemctl is-active --quiet caddy || [[ -z "$(ss -ltnH '( sport = :80 or sp
   ok "Caddy configured for https://$DOMAIN (certificate is automatic)"
   proxy_done=caddy
 else
-  warn "Something else is using ports 80/443. Point $DOMAIN to http://127.0.0.1:$PORT in that web server."
+  if docker ps --format '{{.Image}}' 2>/dev/null | grep -q '^traefik'; then
+    warn "Traefik (Docker) owns ports 80/443. Finish with:  sudo bash deploy/traefik.sh $DOMAIN"
+  else
+    warn "Something else is using ports 80/443. Point $DOMAIN to http://127.0.0.1:$PORT in that web server."
+  fi
 fi
 
 if [[ "$proxy_done" == certbot-* ]]; then
