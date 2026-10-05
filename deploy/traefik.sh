@@ -48,5 +48,6 @@ curl -fsS -o /dev/null "https://$DOMAIN/health" 2>/dev/null || echo "    Not rea
 say "Done"
 echo "    Dashboard: https://$DOMAIN   (password: ADMIN_PASSWORD in $ENV_FILE)"
 echo "    Logs:      docker logs -f amigos-outreach-app-1"
-echo "    Restart:   docker restart amigos-outreach-app-1   (needed after editing .env)"
+echo "    Restart:   sudo bash deploy/restart.sh   (needed after editing .env)"
+echo "    Password:  sudo bash deploy/set-password.sh"
 echo "    Update:    sudo bash deploy/update.sh"

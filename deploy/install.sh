@@ -247,7 +247,7 @@ if [[ -n "${NEW_PASSWORD:-}" ]]; then
 else
   echo "    Password:   see ADMIN_PASSWORD in $ENV_FILE"
 fi
-echo "    Mode:       dry-run. Change SEND_MODE=live in .env, then: sudo systemctl restart $SERVICE"
+echo "    Mode:       dry-run. Change SEND_MODE=live in .env, then: sudo bash deploy/restart.sh"
 echo "    Logs:       journalctl -u $SERVICE -f"
 echo "    Update:     sudo bash deploy/update.sh"
 echo "    Backups:    $DATA_DIR/backups (daily)"
