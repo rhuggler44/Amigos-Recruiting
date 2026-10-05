@@ -112,14 +112,18 @@ recently so it doesn't repeat itself. Everything lands as a draft for you to rev
 
 ## Deploying
 
-Any host that runs a long-lived Node process with a persistent disk works:
+**See [docs/DEPLOY.md](docs/DEPLOY.md).** On an existing Ubuntu/Debian VPS it's one command:
 
-- **Railway / Render / Fly.io:** deploy this repo (a `Dockerfile` is included), attach a volume at `/data`, and set the
-  environment variables from `.env.example`. Point a subdomain of your outreach domain (e.g. `go.amigoshiring.com`) at it.
-- **A small VPS** (DigitalOcean, Lightsail, about $6/month): `npm ci && npm start` under `pm2` or systemd, behind Caddy or nginx for HTTPS.
+```bash
+sudo git clone https://github.com/rhuggler44/Amigos-Recruiting.git /opt/amigos-outreach
+cd /opt/amigos-outreach && sudo bash deploy/install.sh go.yourdomain.com
+```
 
-Run **one** instance. The database is SQLite in `DATA_DIR`. Back up `amigos.db` regularly.
-Keep `APP_SECRET` the same across deploys, because it encrypts the saved inbox passwords.
+The installer runs the app alongside your existing sites (private Node.js, its own user, localhost only, plus a daily backup),
+connects the domain through nginx, Apache or Caddy with HTTPS, and checks that your provider allows outgoing mail ports.
+The guide also covers cPanel's Node.js hosting and Cloudflare Tunnel.
+
+Run **one** instance. Keep `APP_SECRET` the same across deploys, because it encrypts the saved inbox passwords.
 
 ## Project layout
 
@@ -138,6 +142,8 @@ src/
   lib/importer.js        CSV import with DOL column detection and list cleaning
   lib/dns-check.js       SPF / DKIM / DMARC / MX checker
   web/                   dashboard (server-rendered, no build step)
+deploy/install.sh        one-command VPS installer (systemd, backups, nginx/Apache/Caddy + HTTPS)
+deploy/update.sh         pull the latest code and restart
 samples/dol-h2b-sample.csv   example of the DOL file format (fake data)
 docs/                    deliverability and lead-list guides
 ```

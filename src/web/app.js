@@ -5,6 +5,7 @@ import { one, getSettings, setContactStatus, logEvent } from '../db.js';
 import { sign, safeEqual, verifyUnsubscribeToken } from '../lib/crypto.js';
 import { addSuppressions } from '../lib/importer.js';
 import { layout, page, h } from './views.js';
+import { tick } from '../engine/scheduler.js';
 import dashboardRoutes from './routes/dashboard.js';
 import campaignRoutes from './routes/campaigns.js';
 import contactRoutes from './routes/contacts.js';
@@ -34,6 +35,13 @@ export function createApp() {
   app.use(express.static(path.join(config.root, 'public'), { maxAge: '7d' }));
 
   app.get('/health', (req, res) => res.json({ ok: true, mode: config.sendMode }));
+
+  // External trigger for the scheduler, e.g. a cPanel cron job: curl -s "https://host/cron/tick?key=CRON_KEY"
+  app.all('/cron/tick', async (req, res) => {
+    if (!config.cronKey || !safeEqual(String(req.query.key || ''), config.cronKey)) return res.status(404).send('Not found');
+    await tick();
+    res.json({ ok: true });
+  });
 
   // --- Public unsubscribe pages (linked from every email) ---
   const unsubscribe = (contactId, how) => {

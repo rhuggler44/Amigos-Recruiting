@@ -12,7 +12,7 @@ if (problems.length && config.sendMode === 'live') {
 
 getDb();
 const app = createApp();
-app.listen(config.port, () => {
-  console.log(`Amigos Outreach running at ${config.publicUrl} (port ${config.port}, ${config.sendMode} mode)`);
+app.listen(config.port, config.host, () => {
+  console.log(`Amigos Outreach running at ${config.publicUrl} (${config.host}:${config.port}, ${config.sendMode} mode)`);
   if (config.schedulerEnabled) startScheduler();
 });

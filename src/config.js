@@ -23,6 +23,8 @@ const env = process.env;
 export const config = {
   root: ROOT,
   port: Number(env.PORT || 3000),
+  // 127.0.0.1 when running behind a reverse proxy on a shared server.
+  host: env.HOST || '0.0.0.0',
   publicUrl: (env.PUBLIC_URL || `http://localhost:${env.PORT || 3000}`).replace(/\/$/, ''),
   dataDir: path.resolve(ROOT, env.DATA_DIR || 'data'),
   adminPassword: env.ADMIN_PASSWORD || '',
@@ -33,6 +35,8 @@ export const config = {
   schedulerEnabled: env.SCHEDULER !== 'off',
   tickSeconds: Number(env.TICK_SECONDS || 30),
   imapPollMinutes: Number(env.IMAP_POLL_MINUTES || 5),
+  // Optional: lets an outside cron job trigger the scheduler (for hosts that put idle apps to sleep).
+  cronKey: env.CRON_KEY || '',
 };
 
 export function assertProductionConfig() {
