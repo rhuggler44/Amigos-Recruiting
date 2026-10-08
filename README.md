@@ -1,12 +1,15 @@
 # Amigos Outreach
 
-A cold email system built for **Amigos Recruiting**. It plans a new outreach campaign every month, writes
-newsletter-style emails with the Amigos brand, sends them twice a week from several warmed-up inboxes,
-and stops automatically when someone replies, bounces, or unsubscribes.
+A cold email system built for **Amigos Recruiting**. It sends designed newsletter issues (the same look as the
+Amigos Flodesk emails) to the whole list two or three times a week, rotating through a library of issues so
+nobody gets the same email twice in a row. It sends from warmed-up inboxes, including Microsoft 365 through an
+app connection, and stops emailing anyone who replies, bounces, or unsubscribes.
+
+A second mode, monthly 4-email sequences with follow-ups, is built in for later (Settings → Sending mode).
 
 It replaces "the same email over and over from one domain", the pattern that gets a domain flagged by Gmail.
 
-| Newsletter issue (emails 1 & 3) | Campaign planner |
+| Sequence newsletter (emails 1 & 3) | Campaign planner |
 |---|---|
 | <img src="docs/screenshots/email-newsletter.png" width="380"> | <img src="docs/screenshots/campaign.png" width="520"> |
 
@@ -14,6 +17,8 @@ It replaces "the same email over and over from one domain", the pattern that get
 
 | | |
 |---|---|
+| **Newsletter mode (default)** | A library of designed issues: logo, spaced-capitals title, a big photo, the message and an outlined button, like the Amigos Flodesk emails. Each send day, whoever has waited longest gets the next issue they haven't seen, up to what the inboxes can send. Once capacity covers the list, everyone gets an issue every send day, with a minimum gap (2 days by default) between emails to the same person. Five starter issues are built in (the original Flodesk email plus four variations), and Claude can write more. |
+| **Microsoft 365 inboxes** | Connect Outlook / Microsoft 365 inboxes through an app registration (Microsoft Graph). No passwords, no mail ports. See [docs/MICROSOFT-365.md](docs/MICROSOFT-365.md). Google Workspace and others still work with app passwords. |
 | **Monthly campaigns** | Each month gets its own 4-email sequence with an angle tied to the visa calendar (January: the H-2B lottery, July: second-half filings, November: plan next year…). Twelve months of copy are built in. Claude can write fresh copy each month if you add an API key. |
 | **Newsletter-style design** | Emails 1 and 3 are branded issues of *The Amigos Hiring Brief* with the logo, a headline, sections, and a button. Emails 2 and 4 are short, personal-looking replies in the same thread. Those get the most responses and look the least like marketing to spam filters. |
 | **Personalized for each recipient** | First name, cleaned-up company name ("GREEN VALLEY LANDSCAPING, LLC" becomes "Green Valley Landscaping"), state, and industry-specific copy (landscaping, farms, hospitality, seafood, construction, manufacturing/forestry). Subject lines rotate for A/B testing, and small wording variations mean no two emails are identical. |
@@ -52,10 +57,12 @@ npm test                      # 9 test groups covering import, rendering, schedu
    address. Unsubscribe links and the logo in each email point there.
 5. In the dashboard:
    - **Settings**: add your **postal mailing address** (required by law), and check the send days, hours, and time zone.
-   - **Sending inboxes**: add each inbox (SMTP + IMAP). For Google Workspace, use an *App Password*.
-     Click **Test SMTP login**.
+   - **Sending inboxes**: add each inbox. For Microsoft 365 / Outlook, use the app connection
+     ([docs/MICROSOFT-365.md](docs/MICROSOFT-365.md)) and click **Test Microsoft 365 connection**. For Google Workspace,
+     use SMTP + IMAP with an *App Password* and click **Test SMTP login**.
    - **Contacts**: import your list. See [docs/LEAD-LISTS.md](docs/LEAD-LISTS.md) for getting DOL files.
-   - **Campaigns → Plan a month**: review every email in the editor (live preview, test send), then **Activate**.
+   - **Newsletter**: click **Load starter issues**, review each one (live preview, test send, swap the photo),
+     then **Activate** at least three. (In sequence mode: **Campaigns → Plan a month** instead.)
 6. Set `SEND_MODE=live` and restart. The scheduler takes it from there.
 
 Each month, plan the next month's campaign a week or so ahead and activate it. On the first send day of the
@@ -63,6 +70,14 @@ new month, new contacts start getting the new sequence. Follow-ups from the prev
 People who went through a full sequence without replying rest for 45 days before being enrolled again.
 
 ## How sending is decided
+
+**Newsletter mode:** on each send day, the scheduler fills the inboxes' capacity with the active contacts who have
+waited longest (never emailed first, then bigger employers), skipping anyone emailed within the last
+`newsletter_gap_days` (2), anyone suppressed, and anyone who replied. Each person gets the first active issue they
+haven't had yet, or the one they had longest ago. Subject lines rotate within each issue. The **Newsletter** page
+shows how long one pass through the list takes at today's capacity.
+
+**Sequence mode:**
 
 On each send day, at the start of the sending window, the scheduler builds the day's queue:
 
@@ -132,6 +147,9 @@ src/
   server.js              entry point (web app + scheduler)
   config.js / db.js      environment, SQLite schema, settings
   content/library.js     12 monthly themes, 4-email sequence builder, industry copy
+  content/issues.js      starter newsletter issues
+  engine/newsletter.js   newsletter rotation (who gets which issue next)
+  lib/microsoft.js       Microsoft 365 sending and inbox reading through Microsoft Graph
   content/ai-writer.js   Claude-generated campaigns (structured output, validated)
   render/email.js        newsletter + plain email templates, merge fields, text version
   engine/planner.js      campaigns, send days, monthly forecast

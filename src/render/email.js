@@ -231,3 +231,130 @@ ${escapeHtml(settings.company_name)} &middot; ${escapeHtml(address)}<br>
 
   return { subject, preheader, html, text, unsubscribeUrl };
 }
+
+// --- Newsletter issues (the design Amigos used in Flodesk) -----------------
+
+const FD = { text: '#333333', ink: '#111111', muted: '#8a8a8a', line: '#e6e6e6' };
+const FD_FONT = "Helvetica, Arial, sans-serif";
+const FD_DISPLAY = "Futura, 'Century Gothic', 'Trebuchet MS', Helvetica, Arial, sans-serif";
+
+function issueBlocks(blocks, cta) {
+  const p = `margin:0 0 22px;font-family:${FD_FONT};font-size:15px;line-height:1.75;color:${FD.text};`;
+  return blocks.map((b) => {
+    switch (b.type) {
+      case 'heading':
+        return `<p style="margin:30px 0 12px;font-family:${FD_DISPLAY};font-size:14px;font-weight:700;letter-spacing:3px;text-transform:uppercase;color:${FD.ink};">${inline(b.text)}</p>`;
+      case 'bullets':
+      case 'steps':
+        return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin:0 0 18px;">${b.items.map((i, n) => `<tr>
+<td valign="top" width="26" style="padding:0 0 10px;font-family:${FD_FONT};font-size:15px;line-height:1.75;color:${FD.ink};font-weight:700;">${b.type === 'steps' ? `${n + 1}.` : '&ndash;'}</td>
+<td valign="top" style="padding:0 0 10px;font-family:${FD_FONT};font-size:15px;line-height:1.75;color:${FD.text};">${inline(i)}</td></tr>`).join('')}</table>`;
+      case 'callout':
+        return `<p style="margin:6px 0 26px;padding:0 0 0 16px;border-left:3px solid ${FD.ink};font-family:${FD_FONT};font-size:16px;line-height:1.7;color:${FD.ink};">${inline(b.text)}</p>`;
+      case 'button':
+        return cta.url ? issueButton(cta.text || 'Visit our website', cta.url) : '';
+      case 'divider':
+        return `<div style="height:1px;background:${FD.line};margin:24px 0;"></div>`;
+      default:
+        return `<p style="${p}">${inline(b.text)}</p>`;
+    }
+  }).join('\n');
+}
+
+function issueButton(text, url) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:14px auto 30px;"><tr>
+<td align="center" style="border:2px solid ${FD.ink};border-radius:12px;">
+<a href="${escapeHtml(url)}" style="display:inline-block;padding:17px 30px;font-family:${FD_DISPLAY};font-size:14px;letter-spacing:2.5px;text-transform:uppercase;color:${FD.ink};text-decoration:none;">${escapeHtml(text)}</a>
+</td></tr></table>`;
+}
+
+/** Absolute URL for an image path stored on an issue ("/media/x.jpg" or a full URL). */
+export function absoluteUrl(u) {
+  if (!u) return '';
+  return /^https?:\/\//i.test(u) ? u : `${config.publicUrl}/${String(u).replace(/^\//, '')}`;
+}
+
+/**
+ * Render one newsletter issue for one recipient, in the white Flodesk-style layout:
+ * logo, wave divider, spaced-capitals title, hero image, body, outlined button, signature, footer.
+ * Returns { subject, preheader, html, text, unsubscribeUrl }.
+ */
+export function renderIssue({ issue, contact, inbox, settings, sendDay }) {
+  const seed = `${contact.id || contact.email || 'preview'}:issue${issue.id || 0}`;
+  const month = (sendDay || new Date().toISOString()).slice(0, 7);
+  const vars = buildVars({ contact, inbox, settings, campaign: { month } });
+  const t = (s, salt = '') => renderTemplate(s, vars, seed + salt);
+
+  const subject = t(pickVariant(String(issue.subjects || '').split('\n'), seed), ':subj') || t(issue.headline || settings.newsletter_name);
+  const preheader = t(issue.preheader || '', ':pre');
+  const headline = t(issue.headline || '', ':head');
+  const blocks = parseBlocks(t(issue.body, ':body'));
+  const ctaUrl = issue.cta_url || settings.cta_url;
+  let cta = { text: t(issue.cta_text || 'Visit our website', ':cta'), url: '' };
+  if (ctaUrl) {
+    try {
+      const u = new URL(ctaUrl);
+      if (!u.searchParams.has('utm_source')) {
+        u.searchParams.set('utm_source', 'email');
+        u.searchParams.set('utm_medium', 'newsletter');
+        u.searchParams.set('utm_campaign', `issue-${issue.id || 'preview'}`);
+      }
+      cta = { ...cta, url: u.toString() };
+    } catch {
+      cta = { ...cta, url: ctaUrl };
+    }
+  }
+  if (!blocks.some((b) => b.type === 'button')) blocks.push({ type: 'button' });
+
+  const unsubscribeUrl = `${config.publicUrl}/u/${unsubscribeToken(contact.id || 0)}`;
+  const address = settings.postal_address || '[postal address required: set it in Settings]';
+  const reason = settings.footer_reason
+    || 'You\'re receiving this because your business has hired seasonal workers through the U.S. Department of Labor H-2A/H-2B programs (public record).';
+  const logo = settings.logo_url || `${config.publicUrl}/logo.png`;
+  const image = absoluteUrl(issue.image_url);
+  const name = inbox.from_name || settings.company_name;
+  const title = inbox.signature_title || '';
+  const site = settings.company_website.replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="x-apple-disable-message-reformatting"><meta name="color-scheme" content="light only">
+<title>${escapeHtml(subject)}</title>
+<style>@media (max-width:620px){.card{width:100%!important}.pad{padding-left:24px!important;padding-right:24px!important}.hero{padding-left:0!important;padding-right:0!important}}</style>
+</head>
+<body style="margin:0;padding:0;background:#ffffff;">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:#ffffff;">${escapeHtml(preheader)}${'&#847;&zwnj;&nbsp;'.repeat(40)}</div>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#ffffff"><tr><td align="center" style="padding:28px 0;">
+<table role="presentation" class="card" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;background:#ffffff;">
+<tr><td align="center" class="pad" style="padding:0 40px;">
+<a href="${escapeHtml(settings.company_website)}"><img src="${escapeHtml(logo)}" width="300" alt="${escapeHtml(settings.company_name)}" style="display:block;width:300px;max-width:75%;height:auto;border:0;"></a>
+</td></tr>
+<tr><td align="center" class="pad" style="padding:22px 40px 0;"><img src="${config.publicUrl}/wave.png" width="520" alt="" style="display:block;width:520px;max-width:100%;height:auto;border:0;"></td></tr>
+${headline ? `<tr><td align="center" class="pad" style="padding:34px 48px 0;"><h1 style="margin:0;font-family:${FD_DISPLAY};font-size:18px;line-height:1.5;font-weight:700;letter-spacing:4px;text-transform:uppercase;color:${FD.ink};">${inline(headline)}</h1></td></tr>` : ''}
+${image ? `<tr><td align="center" class="hero" style="padding:28px 0 0;"><a href="${escapeHtml(cta.url || settings.company_website)}"><img src="${escapeHtml(image)}" width="600" alt="${escapeHtml(t(issue.image_alt || '', ':alt') || headline)}" style="display:block;width:100%;max-width:600px;height:auto;border:0;"></a></td></tr>` : ''}
+<tr><td class="pad" style="padding:40px 72px 0;">
+${issueBlocks(blocks, cta)}
+<p style="margin:6px 0 0;font-family:${FD_FONT};font-size:15px;line-height:1.7;color:${FD.text};">
+<strong style="color:${FD.ink};">${escapeHtml(name)}</strong>${title ? `<br>${escapeHtml(title)}` : ''}<br>
+${escapeHtml(settings.company_name)}<br>
+<strong style="color:${FD.ink};">${escapeHtml(settings.company_phone)}</strong> &middot; <a href="${escapeHtml(settings.company_website)}" style="color:${FD.ink};">${escapeHtml(site)}</a></p>
+</td></tr>
+<tr><td class="pad" style="padding:40px 72px 10px;">
+<div style="height:1px;background:${FD.line};margin:0 0 18px;"></div>
+<p style="margin:0;font-family:${FD_FONT};font-size:12px;line-height:1.6;color:${FD.muted};text-align:center;">${escapeHtml(reason)}<br>
+${escapeHtml(settings.company_name)} &middot; ${escapeHtml(address)}<br>
+<a href="${unsubscribeUrl}" style="color:${FD.muted};text-decoration:underline;">Unsubscribe</a> or reply &ldquo;unsubscribe&rdquo; and we won&rsquo;t email you again.</p>
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>`;
+
+  const text = [
+    headline,
+    blocksToText(blocks, cta),
+    [name, title, settings.company_name, `${settings.company_phone} | ${site}`].filter(Boolean).join('\n'),
+    `--\n${reason}\n${settings.company_name}, ${address}\nUnsubscribe: ${unsubscribeUrl}`,
+  ].filter(Boolean).join('\n\n');
+
+  return { subject, preheader, html, text, unsubscribeUrl };
+}

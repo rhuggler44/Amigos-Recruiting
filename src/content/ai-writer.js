@@ -132,3 +132,92 @@ export async function generateCampaignCopy({ month, themeKey, notes = '', client
   if (!emails[0].subjects) throw new Error('Claude did not provide subject lines for the first email. Try again.');
   return { name: `${monthLabel(month)}: ${parsed.campaign_name}`, theme, emails };
 }
+
+// --- Newsletter issues ------------------------------------------------------
+
+const IssueSchema = z.object({
+  title: z.string().max(80),
+  subjects: z.array(z.string().max(90)).min(1).max(5),
+  preheader: z.string().max(140),
+  headline: z.string().max(90),
+  body: z.string().min(80).max(3000),
+  cta_text: z.string().max(30),
+});
+const IssuesSchema = z.object({ issues: z.array(IssueSchema).min(1).max(8) });
+
+const ISSUES_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['issues'],
+  properties: {
+    issues: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'subjects', 'preheader', 'headline', 'body', 'cta_text'],
+        properties: {
+          title: { type: 'string' },
+          subjects: { type: 'array', items: { type: 'string' } },
+          preheader: { type: 'string' },
+          headline: { type: 'string' },
+          body: { type: 'string' },
+          cta_text: { type: 'string' },
+        },
+      },
+    },
+  },
+};
+
+const ISSUES_SYSTEM = `${SYSTEM.split('Sequence format:')[0]}Format: you are writing standalone newsletter-style issues, not a sequence. Amigos sends one designed issue at a time to its whole list, two or three times a week, rotating through a library of issues so people don't get the same email twice in a row. The layout around your text is fixed: the Amigos logo, a short headline in spaced capital letters, a large photo of a worker, your body text, an outlined button, then the sender's signature.
+
+For each issue:
+- title: a short internal name for the library (not shown to recipients).
+- subjects: 3 subject variants, 2–7 words each, rotated across recipients.
+- preheader: one sentence shown after the subject in the inbox.
+- headline: 3–8 words, written in normal case (the design capitalizes it).
+- body: greeting with {{first_name|there}}, then 3–5 short paragraphs (120–220 words total). Each issue takes a different angle (for example: the visa lottery, mid-season turnover, planning next season, a specific industry, what makes a good worker, how fast Amigos can move). You may add one "## " heading with a short "- " list or "1. " steps, or one "> " callout, but not every issue needs one. Put "[[button]]" on its own line near the end, then one closing line inviting a reply or a call to {{phone}}.
+- cta_text: a 2–4 word button label.`;
+
+/**
+ * Ask Claude for `count` new newsletter issues, avoiding subjects and headlines already in the library.
+ * Returns [{ title, subjects, preheader, headline, body, cta_text }].
+ */
+export async function generateIssues({ count = 3, notes = '', client } = {}) {
+  if (!client && !aiAvailable()) throw new Error('Set ANTHROPIC_API_KEY to write issues with Claude.');
+  const n = Math.min(6, Math.max(1, Number(count) || 3));
+  const existing = all('SELECT title, headline, subjects FROM issues ORDER BY id DESC LIMIT 30');
+  const prompt = [
+    `Write ${n} new newsletter issue${n === 1 ? '' : 's'}.`,
+    notes ? `Direction from the Amigos team: ${notes}` : '',
+    existing.length ? `Issues already in the library (take different angles; don't reuse or closely imitate these subjects or headlines):\n${existing.map((e) => `- ${e.title} | ${e.headline} | ${e.subjects.split('\n').join(' / ')}`).join('\n')}` : '',
+  ].filter(Boolean).join('\n\n');
+
+  const stream = (client || new Anthropic()).beta.messages.stream({
+    model: config.anthropicModel,
+    max_tokens: 16000,
+    betas: ['server-side-fallback-2026-07-01'],
+    fallbacks: 'default',
+    system: ISSUES_SYSTEM,
+    output_config: { effort: 'high', format: { type: 'json_schema', schema: ISSUES_JSON_SCHEMA } },
+    messages: [{ role: 'user', content: prompt }],
+  });
+  const message = await stream.finalMessage();
+  if (message.stop_reason === 'refusal') throw new Error('Claude declined to write these issues. Try different direction notes.');
+  if (message.stop_reason === 'max_tokens') throw new Error('The response was cut off. Try fewer issues.');
+  const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
+  let parsed;
+  try {
+    parsed = IssuesSchema.parse(JSON.parse(text));
+  } catch (err) {
+    throw new Error(`Claude returned issues in an unexpected shape: ${err.message.slice(0, 300)}`);
+  }
+  return parsed.issues.slice(0, n).map((i) => ({
+    title: i.title.trim(),
+    subjects: i.subjects.map((s) => s.trim()).filter(Boolean).join('\n'),
+    preheader: i.preheader.trim(),
+    headline: i.headline.trim(),
+    body: i.body.trim().includes('[[button]]') ? i.body.trim() : `${i.body.trim()}\n\n[[button]]`,
+    cta_text: i.cta_text.trim() || 'Visit our website',
+  }));
+}

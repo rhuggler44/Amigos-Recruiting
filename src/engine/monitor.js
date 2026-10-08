@@ -2,6 +2,7 @@ import { ImapFlow } from 'imapflow';
 import { all, one, run, getSettings, setSetting, logEvent, setContactStatus } from '../db.js';
 import { decrypt } from '../lib/crypto.js';
 import { addSuppressions } from '../lib/importer.js';
+import { fetchNewMessages } from '../lib/microsoft.js';
 
 const BOUNCE_FROM = /mailer-daemon|postmaster|mail delivery (subsystem|system)/i;
 const AUTO_REPLY = /auto(matic)?[ -]?reply|out of (the )?office|away from (the )?office|vacation|on leave|autoresponder/i;
@@ -86,6 +87,43 @@ export function checkBounceRate() {
   return false;
 }
 
+/** Classify one raw incoming message and apply it. Shared by the IMAP and Microsoft 365 readers. */
+export function handleRawMessage(inbox, { from = '', subject = '', inReplyTo, source = '' }) {
+  if (from.toLowerCase() === inbox.from_email.toLowerCase()) return null;
+  const split = source.search(/\r?\n\r?\n/);
+  const headers = split > 0 ? source.slice(0, split) : '';
+  const text = split > 0 ? source.slice(split) : source;
+  const header = (name) => `${headers}\n`.match(new RegExp(`^${name}:\\s*([\\s\\S]*?)(?:\\r?\\n(?!\\s))`, 'im'))?.[1] || '';
+  const refs = header('references').match(/<[^>]+>/g) || [];
+  const replyTo = inReplyTo || header('in-reply-to').match(/<[^>]+>/)?.[0];
+  const classification = classifyIncoming({ from, subject, text, headers });
+  if (classification.type === 'ignore') return null;
+  return applyIncoming({
+    inboxId: inbox.id,
+    fromAddress: from,
+    inReplyTo: replyTo,
+    references: refs,
+    classification,
+    snippet: `${subject} | ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)}`,
+  });
+}
+
+/** Microsoft 365: read new inbox messages through Graph instead of IMAP. */
+export async function pollGraphInbox(inbox) {
+  const counts = { reply: 0, bounce: 0, unsubscribe: 0 };
+  // First run: only look back two weeks rather than the whole mailbox.
+  const since = inbox.ms_last_received || new Date(Date.now() - 14 * 86400000).toISOString();
+  const messages = await fetchNewMessages(inbox, since);
+  let latest = since;
+  for (const m of messages) {
+    if (m.received > latest) latest = m.received;
+    const outcome = handleRawMessage(inbox, m);
+    if (outcome) counts[outcome]++;
+  }
+  if (latest !== inbox.ms_last_received) run('UPDATE inboxes SET ms_last_received = ? WHERE id = ?', latest, inbox.id);
+  return counts;
+}
+
 async function pollInbox(inbox) {
   const client = new ImapFlow({
     host: inbox.imap_host,
@@ -106,22 +144,11 @@ async function pollInbox(inbox) {
       for await (const msg of client.fetch(range, { uid: true, envelope: true, source: { maxLength: 200000 } }, { uid: !!lastUid })) {
         if (msg.uid <= lastUid) continue;
         maxUid = Math.max(maxUid, msg.uid);
-        const source = msg.source?.toString('utf8') || '';
-        const split = source.search(/\r?\n\r?\n/);
-        const headers = split > 0 ? source.slice(0, split) : '';
-        const text = split > 0 ? source.slice(split) : source;
-        const fromAddr = msg.envelope?.from?.[0]?.address || '';
-        if (fromAddr.toLowerCase() === inbox.from_email.toLowerCase()) continue;
-        const refs = (headers.match(/^references:\s*([\s\S]*?)(?:\r?\n(?!\s))/im)?.[1] || '').match(/<[^>]+>/g) || [];
-        const classification = classifyIncoming({ from: fromAddr, subject: msg.envelope?.subject || '', text, headers });
-        if (classification.type === 'ignore') continue;
-        const outcome = applyIncoming({
-          inboxId: inbox.id,
-          fromAddress: fromAddr,
+        const outcome = handleRawMessage(inbox, {
+          from: msg.envelope?.from?.[0]?.address || '',
+          subject: msg.envelope?.subject || '',
           inReplyTo: msg.envelope?.inReplyTo,
-          references: refs,
-          classification,
-          snippet: `${msg.envelope?.subject || ''} | ${text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300)}`,
+          source: msg.source?.toString('utf8') || '',
         });
         if (outcome) counts[outcome]++;
       }
@@ -138,11 +165,13 @@ async function pollInbox(inbox) {
 /** Poll every inbox that has IMAP configured. */
 export async function pollAllInboxes() {
   const out = [];
-  for (const inbox of all("SELECT * FROM inboxes WHERE imap_host IS NOT NULL AND imap_host != '' AND status NOT IN ('paused','removed')")) {
+  for (const inbox of all(`SELECT * FROM inboxes WHERE status NOT IN ('paused','removed')
+      AND ((provider = 'microsoft' AND ms_client_id IS NOT NULL AND ms_client_id != '') OR (imap_host IS NOT NULL AND imap_host != ''))`)) {
+    const microsoft = inbox.provider === 'microsoft';
     try {
-      out.push({ inbox: inbox.from_email, ...(await pollInbox(inbox)) });
+      out.push({ inbox: inbox.from_email, ...(await (microsoft ? pollGraphInbox(inbox) : pollInbox(inbox))) });
     } catch (err) {
-      logEvent('error', { inboxId: inbox.id, detail: `IMAP: ${err.message}` });
+      logEvent('error', { inboxId: inbox.id, detail: `${microsoft ? 'Microsoft 365' : 'IMAP'}: ${err.message}` });
       out.push({ inbox: inbox.from_email, error: err.message });
     }
   }

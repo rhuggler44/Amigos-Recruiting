@@ -12,7 +12,7 @@ const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frid
 
 const TEXT_SETTINGS = ['company_name', 'company_phone', 'company_email', 'company_website', 'postal_address', 'cta_url', 'newsletter_name',
   'logo_url', 'footer_reason', 'timezone', 'window_start', 'window_end', 'followup_gap_days', 'cooldown_days', 'max_new_per_day',
-  'per_domain_daily_cap', 'min_gap_seconds', 'warmup_start_per_day', 'warmup_step_per_week', 'bounce_pause_threshold'];
+  'per_domain_daily_cap', 'min_gap_seconds', 'warmup_start_per_day', 'warmup_step_per_week', 'bounce_pause_threshold', 'newsletter_gap_days'];
 
 r.get('/settings', (req, res) => {
   const s = getSettings();
@@ -27,10 +27,14 @@ r.get('/settings', (req, res) => {
     <div class="row">${field('Newsletter name', 'newsletter_name', s.newsletter_name)}${field('Logo URL (optional)', 'logo_url', s.logo_url || '', { help: 'Blank = the logo served by this app at PUBLIC_URL/logo.png.' })}</div>
     ${field('Why they\'re receiving this (footer)', 'footer_reason', s.footer_reason || '', { attrs: 'placeholder="You\'re receiving this because your business has hired seasonal workers through the U.S. Department of Labor H-2A/H-2B programs (public record)."', help: 'Blank = the default shown in the placeholder. Explaining why you\'re writing lowers spam complaints.' })}
   </div>
+  <div class="card"><h3>What to send</h3>
+    ${select('Sending mode', 'mode', [['newsletter', 'Newsletter: designed issues to the whole list, in rotation'], ['sequence', 'Sequences: a monthly 4-email sequence with follow-ups']], s.mode)}
+    <div class="row">${field('Days between newsletters to the same person', 'newsletter_gap_days', s.newsletter_gap_days, { type: 'number', attrs: 'min="1" max="14"', help: '2 lets people get an issue on Monday, Wednesday and Friday. 3 or more spaces them out.' })}</div>
+  </div>
   <div class="card"><h3>Schedule</h3>
     <div class="checks">${DAY_NAMES.map((d, i) => `<label><input type="checkbox" name="send_days" value="${i}" ${days.has(String(i)) ? 'checked' : ''}> ${d}</label>`).join('')}</div>
     <div class="row">${select('Time zone', 'timezone', zones.map((z) => [z, z]), s.timezone)}${field('Window opens', 'window_start', s.window_start, { type: 'time' })}${field('Window closes', 'window_end', s.window_end, { type: 'time' })}</div>
-    <p class="small muted">Tuesday and Thursday mornings get the best response from business owners. Emails go out one at a time at random intervals across the window, never all at once.</p>
+    <p class="small muted">For 2–3 newsletters a week, pick 2–3 days that aren't back to back (for example Monday, Wednesday and Friday). Tuesday and Thursday mornings get the best response from business owners. Emails go out one at a time at random intervals across the window, never all at once.</p>
   </div>
   <div class="card"><h3>Pacing &amp; safety</h3>
     <div class="row">${field('Days between emails to the same person', 'followup_gap_days', s.followup_gap_days, { type: 'number', attrs: 'min="3"' })}
@@ -56,6 +60,7 @@ r.get('/settings', (req, res) => {
 
 r.post('/settings', (req, res) => {
   for (const k of TEXT_SETTINGS) if (req.body[k] !== undefined) setSetting(k, String(req.body[k]).trim());
+  if (req.body.mode !== undefined) setSetting('mode', req.body.mode === 'sequence' ? 'sequence' : 'newsletter');
   const days = [].concat(req.body.send_days || []).filter((d) => /^[0-6]$/.test(d));
   if (!days.length) return res.back('/settings', 'Pick at least one send day.', 'error');
   setSetting('send_days', days.join(','));
@@ -70,7 +75,7 @@ r.post('/settings/pause', (req, res) => {
 r.post('/settings/run-now', async (req, res) => {
   const q = buildDayQueue({ force: true });
   const { sent } = await processDue();
-  res.back('/activity', q.skipped ? `Queue: ${q.skipped}. Sent ${sent} due emails.` : `Queued ${q.queued} (${q.followups} follow-ups, ${q.fresh} new). Sent ${sent} that were due.`);
+  res.back('/activity', q.skipped ? `Queue: ${q.skipped}. Sent ${sent} due emails.` : `Queued ${q.queued} (${q.newsletter} newsletter, ${q.followups} follow-ups, ${q.fresh} new). Sent ${sent} that were due.`);
 });
 
 r.post('/settings/poll-now', async (req, res) => {
@@ -81,14 +86,14 @@ r.post('/settings/poll-now', async (req, res) => {
 r.get('/activity', (req, res) => {
   const tab = req.query.tab === 'events' ? 'events' : 'sends';
   const status = req.query.status || '';
-  const sends = tab === 'sends' ? all(`SELECT s.*, c.email, c.company, i.from_email FROM sends s
-      JOIN contacts c ON c.id = s.contact_id LEFT JOIN inboxes i ON i.id = s.inbox_id
+  const sends = tab === 'sends' ? all(`SELECT s.*, c.email, c.company, i.from_email, iss.title AS issue_title FROM sends s
+      JOIN contacts c ON c.id = s.contact_id LEFT JOIN inboxes i ON i.id = s.inbox_id LEFT JOIN issues iss ON iss.id = s.issue_id
       ${status ? 'WHERE s.status = ?' : ''} ORDER BY s.scheduled_for DESC LIMIT 300`, ...(status ? [status] : [])) : [];
   const events = tab === 'events' ? all(`SELECT e.*, c.email, c.company FROM events e LEFT JOIN contacts c ON c.id = e.contact_id ORDER BY e.id DESC LIMIT 300`) : [];
   res.view('Activity', '/activity', `
   <div class="tabs"><a href="?tab=sends" class="${tab === 'sends' ? 'on' : ''}">Emails</a><a href="?tab=events" class="${tab === 'events' ? 'on' : ''}">Replies, bounces &amp; alerts</a></div>
   ${tab === 'sends' ? `<form class="toolbar"><input type="hidden" name="tab" value="sends"><select name="status" onchange="this.form.submit()"><option value="">Any status</option>${['queued', 'sent', 'failed', 'canceled'].map((x) => `<option ${x === status ? 'selected' : ''}>${x}</option>`).join('')}</select></form>
-  ${table(['Scheduled', 'To', 'Email', 'From', 'Status', 'Subject / note'], sends.map((s) => [fmtDate(s.scheduled_for), `<a href="/contacts/${s.contact_id}">${h(s.email)}</a><div class="small muted">${h(s.company || '')}</div>`, s.step, h(s.from_email || ''), statusBadge(s.status), `${h(s.subject || '')}<div class="small muted">${h(s.error || '')}</div>`]), 'No emails queued or sent yet.')}`
+  ${table(['Scheduled', 'To', 'Email', 'From', 'Status', 'Subject / note'], sends.map((s) => [fmtDate(s.scheduled_for), `<a href="/contacts/${s.contact_id}">${h(s.email)}</a><div class="small muted">${h(s.company || '')}</div>`, s.issue_id ? `<a href="/newsletter/issues/${s.issue_id}">${h(s.issue_title || 'Newsletter')}</a>` : `Sequence email ${s.step}`, h(s.from_email || ''), statusBadge(s.status), `${h(s.subject || '')}<div class="small muted">${h(s.error || '')}</div>`]), 'No emails queued or sent yet.')}`
     : table(['When', 'Type', 'Contact', 'Detail'], events.map((e) => [fmtDate(e.created_at), statusBadge(e.type), e.contact_id ? `<a href="/contacts/${e.contact_id}">${h(e.email || '')}</a>` : '', `<span class="small">${h(e.detail || '')}</span>`]), 'Nothing yet.')}`);
 });
 

@@ -3,6 +3,7 @@ import { inboxDailyLimit } from './capacity.js';
 import { audienceWhere } from './planner.js';
 import { addDays, daysBetween, hhmmToMinutes, localInfo, zonedToUtc, weekdayOf } from '../lib/time.js';
 import { FREEMAIL } from '../lib/email-check.js';
+import { activeIssues, newsletterCandidates, issueHistory, nextIssueFor } from './newsletter.js';
 
 export function isSendDay(day, settings) {
   const days = String(settings.send_days || '').split(',').map((d) => Number(d.trim()));
@@ -11,12 +12,14 @@ export function isSendDay(day, settings) {
 
 /** Inboxes that can send right now (SMTP configured, not paused or in error). */
 export function sendingInboxes() {
-  return all("SELECT * FROM inboxes WHERE status = 'active' AND smtp_host IS NOT NULL AND smtp_host != '' ORDER BY id");
+  return all(`SELECT * FROM inboxes WHERE status = 'active'
+    AND ((provider = 'microsoft' AND ms_client_id IS NOT NULL AND ms_client_id != '') OR (smtp_host IS NOT NULL AND smtp_host != '')) ORDER BY id`);
 }
 
 /**
- * Build the queue for one send day: due follow-ups first, then new contacts for the current
- * month's campaign, spread across the sending window per inbox. Safe to call repeatedly; it only
+ * Build the queue for one send day: due sequence follow-ups first, then either newsletter issues
+ * (newsletter mode) or new contacts for the current month's campaign (sequence mode), spread
+ * across the sending window per inbox. Safe to call repeatedly; it only
  * runs once per day.
  */
 export function buildDayQueue({ now = new Date(), force = false } = {}) {
@@ -24,7 +27,7 @@ export function buildDayQueue({ now = new Date(), force = false } = {}) {
   const tz = settings.timezone;
   const local = localInfo(now, tz);
   const day = local.day;
-  const result = { day, queued: 0, followups: 0, fresh: 0, skipped: null };
+  const result = { day, queued: 0, followups: 0, fresh: 0, newsletter: 0, skipped: null };
 
   if (settings.paused === '1') return { ...result, skipped: 'sending is paused' };
   if (!isSendDay(day, settings) && !force) return { ...result, skipped: 'not a send day' };
@@ -85,9 +88,34 @@ export function buildDayQueue({ now = new Date(), force = false } = {}) {
       }
     }
 
-    // 2) New contacts for this month's campaign.
-    const current = campaigns.find((c) => c.month === local.month);
+    const domainCap = Number(settings.per_domain_daily_cap) || 0;
+    const domainCount = new Map(all(`SELECT c.domain, COUNT(*) AS n FROM sends s JOIN contacts c ON c.id = s.contact_id
+      WHERE s.send_day = ? AND s.status IN ('queued','sent') GROUP BY c.domain`, day).map((r) => [r.domain, r.n]));
+    for (const job of inboxes.flatMap((ib) => ib.jobs)) domainCount.set(job.en.domain, (domainCount.get(job.en.domain) || 0) + 1);
     const maxNew = Number(settings.max_new_per_day) || Infinity;
+
+    // 2a) Newsletter mode: the next issue each person hasn't seen, longest-waiting people first.
+    if (settings.mode === 'newsletter') {
+      const issues = activeIssues();
+      if (issues.length && totalLeft() > 0) {
+        const candidates = newsletterCandidates(day, settings, Math.min(totalLeft(), maxNew) * 3);
+        const history = issueHistory(candidates.map((c) => c.id));
+        for (const c of candidates) {
+          if (result.newsletter >= maxNew || !totalLeft()) break;
+          if (domainCap && !FREEMAIL.has(c.domain) && (domainCount.get(c.domain) || 0) >= domainCap) continue;
+          const issue = nextIssueFor(issues, history.get(c.id));
+          const inbox = pickInbox();
+          if (!issue || !inbox) break;
+          inbox.left--;
+          inbox.jobs.push({ issue, contactId: c.id });
+          domainCount.set(c.domain, (domainCount.get(c.domain) || 0) + 1);
+          result.newsletter++;
+        }
+      }
+    }
+
+    // 2b) Sequence mode: new contacts for this month's campaign.
+    const current = settings.mode === 'newsletter' ? null : campaigns.find((c) => c.month === local.month);
     if (current && totalLeft() > 0) {
       const step1 = one('SELECT * FROM campaign_emails WHERE campaign_id = ? AND step = 1', current.id);
       const w = audienceWhere(JSON.parse(current.audience || '{}'));
@@ -100,11 +128,6 @@ export function buildDayQueue({ now = new Date(), force = false } = {}) {
           AND NOT EXISTS (SELECT 1 FROM suppressions s WHERE s.value = c.email OR s.value = c.domain)
         ORDER BY c.workers_requested DESC, c.id ASC
         LIMIT ?`, ...w.params, current.id, cooldownCutoff, Math.min(totalLeft(), maxNew) * 3) : [];
-
-      const domainCap = Number(settings.per_domain_daily_cap) || 0;
-      const domainCount = new Map(all(`SELECT c.domain, COUNT(*) AS n FROM sends s JOIN contacts c ON c.id = s.contact_id
-        WHERE s.send_day = ? AND s.status IN ('queued','sent') GROUP BY c.domain`, day).map((r) => [r.domain, r.n]));
-      for (const job of inboxes.flatMap((ib) => ib.jobs)) domainCount.set(job.en.domain, (domainCount.get(job.en.domain) || 0) + 1);
 
       for (const c of candidates) {
         if (result.fresh >= maxNew || !totalLeft()) break;
@@ -129,6 +152,12 @@ export function buildDayQueue({ now = new Date(), force = false } = {}) {
         const jitter = Math.floor(Math.random() * Math.max(1, slot - minGap));
         const offsetSec = i * slot + jitter;
         const at = new Date(zonedToUtc(day, start, tz).getTime() + offsetSec * 1000);
+        if (job.issue) {
+          run(`INSERT INTO sends (campaign_id, email_id, enrollment_id, contact_id, inbox_id, step, send_day, scheduled_for, issue_id)
+               VALUES (0, 0, 0, ?, ?, 0, ?, ?, ?)`, job.contactId, ib.id, day, at.toISOString(), job.issue.id);
+          result.queued++;
+          return;
+        }
         run(`INSERT INTO sends (campaign_id, email_id, enrollment_id, contact_id, inbox_id, step, send_day, scheduled_for)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         job.camp.id, job.email.id, job.en.id, job.en.contact_id, ib.id, job.email.step, day, at.toISOString());

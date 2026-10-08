@@ -5,7 +5,8 @@ import nodemailer from 'nodemailer';
 import { config } from '../config.js';
 import { all, one, run, getSettings, logEvent, setContactStatus } from '../db.js';
 import { decrypt } from '../lib/crypto.js';
-import { renderEmail } from '../render/email.js';
+import { renderEmail, renderIssue } from '../render/email.js';
+import { sendViaGraph, verifyGraph } from '../lib/microsoft.js';
 import { domainOf } from '../lib/email-check.js';
 
 const transports = new Map();
@@ -51,7 +52,9 @@ export function buildMessage({ inbox, contact, rendered, threadMessageId }) {
 }
 
 async function deliver(inbox, message) {
-  const info = await transportFor(inbox).sendMail(message);
+  const info = config.sendMode === 'live' && inbox.provider === 'microsoft'
+    ? await sendViaGraph(inbox, message)
+    : await transportFor(inbox).sendMail(message);
   if (config.sendMode !== 'live') {
     const dir = path.join(config.dataDir, 'outbox');
     fs.mkdirSync(dir, { recursive: true });
@@ -71,6 +74,16 @@ export async function sendTest({ inbox, email, campaign, to, contact }) {
   return deliver(inbox, message);
 }
 
+/** Send a one-off test of a newsletter issue to any address (not recorded as a send). */
+export async function sendIssueTest({ inbox, issue, to, contact }) {
+  const settings = getSettings();
+  const sample = contact || { id: 0, email: to, first_name: 'Maria', company: 'Green Valley Landscaping', state: 'TX', industry: 'landscaping', visa_type: 'H-2B' };
+  const rendered = renderIssue({ issue, contact: sample, inbox, settings });
+  const message = buildMessage({ inbox, contact: { ...sample, email: to }, rendered });
+  message.subject = `[TEST] ${message.subject}`;
+  return deliver(inbox, message);
+}
+
 function classifyError(err) {
   const code = Number(err.responseCode) || 0;
   const msg = `${err.code || ''} ${err.response || err.message || ''}`;
@@ -81,10 +94,60 @@ function classifyError(err) {
   return 'other';
 }
 
+function recordFailure(err, s, contact, inbox) {
+  const kind = classifyError(err);
+  const detail = String(err.response || err.message).slice(0, 500);
+  run("UPDATE sends SET status = 'failed', error = ? WHERE id = ?", `${kind}: ${detail}`, s.id);
+  if (kind === 'recipient') {
+    setContactStatus(contact.id, 'bounced', detail);
+    logEvent('bounce', { contactId: contact.id, inboxId: inbox.id, sendId: s.id, detail });
+  } else if (kind === 'auth' || kind === 'throttled') {
+    run("UPDATE inboxes SET status = 'error', last_error = ? WHERE id = ?", `${kind}: ${detail}`, inbox.id);
+    logEvent('error', { inboxId: inbox.id, sendId: s.id, detail: `Inbox paused (${kind}): ${detail}` });
+  } else {
+    logEvent('error', { contactId: contact.id, inboxId: inbox.id, sendId: s.id, detail });
+  }
+  return 'failed';
+}
+
+/** Send one queued newsletter issue. */
+async function sendQueuedIssue(s) {
+  const settings = getSettings();
+  const contact = one('SELECT * FROM contacts WHERE id = ?', s.contact_id);
+  const issue = one('SELECT * FROM issues WHERE id = ?', s.issue_id);
+  const inbox = one('SELECT * FROM inboxes WHERE id = ?', s.inbox_id);
+  const cancel = (why) => { run("UPDATE sends SET status = 'canceled', error = ? WHERE id = ?", why, s.id); return 'canceled'; };
+  if (!contact || contact.status !== 'active') return cancel(`contact ${contact?.status || 'missing'}`);
+  if (!issue || issue.status !== 'active') return cancel('issue no longer active');
+  if (settings.mode !== 'newsletter') return cancel('newsletter mode turned off');
+  if (!inbox) return cancel('inbox removed');
+  if (inbox.status !== 'active') return 'queued';
+  if (one('SELECT 1 AS x FROM suppressions WHERE value = ? OR value = ?', contact.email, contact.domain)) {
+    setContactStatus(contact.id, 'unsubscribed', 'on suppression list');
+    return 'canceled';
+  }
+  if (!settings.postal_address) return cancel('postal address missing in Settings');
+
+  const rendered = renderIssue({ issue, contact, inbox, settings, sendDay: s.send_day });
+  const message = buildMessage({ inbox, contact, rendered });
+  const claimed = run("UPDATE sends SET status = 'sending' WHERE id = ? AND status = 'queued'", s.id);
+  if (!claimed.changes) return 'skipped';
+  try {
+    await deliver(inbox, message);
+  } catch (err) {
+    return recordFailure(err, s, contact, inbox);
+  }
+  const now = new Date().toISOString();
+  run("UPDATE sends SET status = 'sent', sent_at = ?, subject = ?, message_id = ? WHERE id = ?", now, message.subject, message.messageId, s.id);
+  run("UPDATE contacts SET last_contacted_at = ?, updated_at = datetime('now') WHERE id = ?", now, contact.id);
+  return 'sent';
+}
+
 /** Send one queued row. Returns the new status. */
 export async function sendQueued(sendRow) {
   const s = one('SELECT * FROM sends WHERE id = ?', sendRow.id);
   if (!s || s.status !== 'queued') return s?.status;
+  if (s.issue_id) return sendQueuedIssue(s);
   const settings = getSettings();
   const contact = one('SELECT * FROM contacts WHERE id = ?', s.contact_id);
   const campaign = one('SELECT * FROM campaigns WHERE id = ?', s.campaign_id);
@@ -112,19 +175,7 @@ export async function sendQueued(sendRow) {
   try {
     await deliver(inbox, message);
   } catch (err) {
-    const kind = classifyError(err);
-    const detail = String(err.response || err.message).slice(0, 500);
-    run("UPDATE sends SET status = 'failed', error = ? WHERE id = ?", `${kind}: ${detail}`, s.id);
-    if (kind === 'recipient') {
-      setContactStatus(contact.id, 'bounced', detail);
-      logEvent('bounce', { contactId: contact.id, inboxId: inbox.id, sendId: s.id, detail });
-    } else if (kind === 'auth' || kind === 'throttled') {
-      run("UPDATE inboxes SET status = 'error', last_error = ? WHERE id = ?", `${kind}: ${detail}`, inbox.id);
-      logEvent('error', { inboxId: inbox.id, sendId: s.id, detail: `Inbox paused (${kind}): ${detail}` });
-    } else {
-      logEvent('error', { contactId: contact.id, inboxId: inbox.id, sendId: s.id, detail });
-    }
-    return 'failed';
+    return recordFailure(err, s, contact, inbox);
   }
 
   const now = new Date().toISOString();
@@ -162,6 +213,8 @@ export async function processDue(now = new Date()) {
 
 /** Verify SMTP credentials without sending anything. */
 export async function verifyInbox(inbox) {
+  // Reading the mailbox is harmless, so Microsoft 365 connections are checked even in dry-run.
+  if (inbox.provider === 'microsoft') return verifyGraph(inbox);
   if (config.sendMode !== 'live') return 'Dry-run mode: SMTP not contacted. Set SEND_MODE=live to verify for real.';
   await transportFor(inbox).verify();
   return 'SMTP login OK';

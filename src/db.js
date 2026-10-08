@@ -132,6 +132,24 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type, created_at);
 
+-- Newsletter mode: a library of designed issues sent to the whole list in rotation.
+CREATE TABLE IF NOT EXISTS issues (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,                        -- internal name, never shown to recipients
+  status TEXT NOT NULL DEFAULT 'draft',       -- draft | active | archived
+  position INTEGER NOT NULL DEFAULT 0,        -- rotation order
+  subjects TEXT NOT NULL,                     -- one subject variant per line
+  preheader TEXT,
+  headline TEXT,                              -- spaced capitals title above the image
+  image_url TEXT,
+  image_alt TEXT,
+  body TEXT NOT NULL,
+  cta_text TEXT,
+  cta_url TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT
@@ -159,7 +177,27 @@ export const DEFAULT_SETTINGS = {
   warmup_step_per_week: '10',
   bounce_pause_threshold: '0.04',     // auto-pause if bounce rate over the last 150 sends exceeds this
   paused: '0',
+  mode: 'newsletter',                 // newsletter = rotate designed issues to the whole list | sequence = monthly 4-email sequences
+  newsletter_gap_days: '2',           // minimum days between two newsletter issues to the same person
 };
+
+// Columns added after the first release. SQLite can't ADD COLUMN IF NOT EXISTS, so check first.
+const MIGRATIONS = [
+  ['sends', 'issue_id', 'INTEGER'],
+  ['inboxes', 'provider', "TEXT NOT NULL DEFAULT 'smtp'"], // smtp | microsoft
+  ['inboxes', 'ms_tenant_id', 'TEXT'],
+  ['inboxes', 'ms_client_id', 'TEXT'],
+  ['inboxes', 'ms_client_secret', 'TEXT'],
+  ['inboxes', 'ms_last_received', 'TEXT'],
+];
+
+function migrate(d) {
+  for (const [table, column, type] of MIGRATIONS) {
+    const cols = d.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+    if (!cols.includes(column)) d.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
+  d.exec('CREATE INDEX IF NOT EXISTS idx_sends_issue ON sends(issue_id, contact_id)');
+}
 
 let db;
 
@@ -170,6 +208,7 @@ export function getDb() {
   db = new DatabaseSync(file);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   db.exec(SCHEMA);
+  migrate(db);
   const insert = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) insert.run(k, v);
   return db;

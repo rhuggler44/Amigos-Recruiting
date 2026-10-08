@@ -5,6 +5,7 @@ export { h };
 
 const NAV = [
   ['/', 'Dashboard'],
+  ['/newsletter', 'Newsletter'],
   ['/campaigns', 'Campaigns'],
   ['/contacts', 'Contacts'],
   ['/inboxes', 'Sending inboxes'],

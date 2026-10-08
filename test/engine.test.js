@@ -114,6 +114,7 @@ test('timezone conversion and warm-up ramp', () => {
 });
 
 test('full cycle: plan, queue, send, follow-up threading, reply handling', async () => {
+  db.setSetting('mode', 'sequence');
   db.setSetting('postal_address', '123 Main St, Indianapolis, IN 46204');
   db.setSetting('timezone', 'America/Chicago');
   db.setSetting('send_days', '2,4');

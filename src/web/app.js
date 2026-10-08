@@ -11,6 +11,7 @@ import campaignRoutes from './routes/campaigns.js';
 import contactRoutes from './routes/contacts.js';
 import inboxRoutes from './routes/inboxes.js';
 import settingsRoutes from './routes/settings.js';
+import newsletterRoutes, { mediaDir } from './routes/newsletter.js';
 
 const SESSION_COOKIE = 'amigos_session';
 const SESSION_DAYS = 14;
@@ -33,6 +34,9 @@ export function createApp() {
   app.set('trust proxy', 1);
   app.use(express.urlencoded({ extended: false, limit: '2mb' }));
   app.use(express.static(path.join(config.root, 'public'), { maxAge: '7d' }));
+
+  // Uploaded newsletter photos. Public, because recipients' mail apps load them.
+  app.use('/media', express.static(mediaDir(), { maxAge: '30d' }), (req, res) => res.status(404).send('Not found'));
 
   app.get('/health', (req, res) => res.json({ ok: true, mode: config.sendMode }));
 
@@ -105,6 +109,7 @@ export function createApp() {
   });
 
   app.use(dashboardRoutes);
+  app.use(newsletterRoutes);
   app.use(campaignRoutes);
   app.use(contactRoutes);
   app.use(inboxRoutes);
